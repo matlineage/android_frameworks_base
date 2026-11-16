@@ -21,9 +21,14 @@ import android.app.Notification.MessagingStyle
 import android.app.Person
 import android.content.Context
 import android.content.pm.LauncherApps
+import android.database.ContentObserver
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.UserHandle
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
@@ -85,6 +90,11 @@ constructor(
 
     private var unimportantConversationKeys: Set<String> = emptySet()
     /**
+     * Whether coloured notification icons are enabled for the current user. Refreshed from
+     * [Settings.System#STATUSBAR_COLORED_ICONS] on attach and whenever the setting changes.
+     */
+    private var coloredIconsEnabled = true
+    /**
      * A map of running jobs for fetching the person avatar from launcher. The key is the
      * notification entry key.
      */
@@ -101,6 +111,49 @@ constructor(
 
     fun attach() {
         notifCollection.addCollectionListener(entryListener)
+        updateColoredIconsSetting()
+        registerColoredIconsObserver()
+    }
+
+    /**
+     * Reads [Settings.System#STATUSBAR_COLORED_ICONS] for the current user and caches the result.
+     */
+    private fun updateColoredIconsSetting() {
+        val userId = UserHandle.myUserId()
+        coloredIconsEnabled = Settings.System.getIntForUser(
+                shadeContext.contentResolver,
+                Settings.System.STATUSBAR_COLORED_ICONS,
+                1 /* default: enabled */,
+                userId) != 0
+    }
+
+    /**
+     * Registers a [ContentObserver] for [Settings.System#STATUSBAR_COLORED_ICONS] so that changes
+     * to the setting are applied to already-visible notification icons without a reboot or
+     * SystemUI restart. Registered once for the current user during [attach].
+     */
+    private fun registerColoredIconsObserver() {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                updateColoredIconsSetting()
+                applyColoredIconsToAll()
+            }
+        }
+        shadeContext.contentResolver.registerContentObserver(
+                Settings.System.getUriFor(Settings.System.STATUSBAR_COLORED_ICONS),
+                false /* notifyForDescendants */,
+                observer,
+                UserHandle.myUserId())
+    }
+
+    /**
+     * Applies the current coloured-icons state to every active notification's status bar icon.
+     */
+    private fun applyColoredIconsToAll() {
+        for (entry in notifCollection.allNotifs) {
+            entry.icons.statusBarIcon?.setColoredIconsEnabled(coloredIconsEnabled)
+            entry.icons.statusBarChipIcon?.setColoredIconsEnabled(coloredIconsEnabled)
+        }
     }
 
     private val entryListener =
@@ -142,6 +195,7 @@ constructor(
         traceSection("IconManager.createSbIconView") {
             val sbIcon = iconBuilder.createIconView(entry, context)
             sbIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            sbIcon.setColoredIconsEnabled(coloredIconsEnabled)
             val (normalIconDescriptor, _) = getIconDescriptors(entry)
             setIcon(entry, normalIconDescriptor, sbIcon)
             return sbIcon
@@ -159,16 +213,19 @@ constructor(
             // Construct the status bar icon view.
             val sbIcon = iconBuilder.createIconView(entry)
             sbIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            sbIcon.setColoredIconsEnabled(coloredIconsEnabled)
 
             // Construct the shelf icon view.
             val shelfIcon = iconBuilder.createIconView(entry, shadeContext)
             shelfIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
             shelfIcon.visibility = View.INVISIBLE
+            shelfIcon.setColoredIconsEnabled(false)
 
             // Construct the aod icon view.
             val aodIcon = iconBuilder.createIconView(entry)
             aodIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
             aodIcon.setIncreasedSize(true)
+            aodIcon.setColoredIconsEnabled(false)
 
             // Set the icon views' icons
             val (normalIconDescriptor, sensitiveIconDescriptor) = getIconDescriptors(entry)
@@ -208,6 +265,7 @@ constructor(
             val notificationContentDescription =
                 entry.sbn.notification?.let { iconBuilder.getIconContentDescription(it) }
             iconView.setNotification(entry.sbn, notificationContentDescription)
+            iconView.setColoredIconsEnabled(coloredIconsEnabled)
             setIcon(entry, normalIconDescriptor, iconView)
         }
 
@@ -238,21 +296,25 @@ constructor(
 
             entry.icons.statusBarIcon?.let {
                 it.setNotification(entry.sbn, notificationContentDescription)
+                it.setColoredIconsEnabled(coloredIconsEnabled)
                 setIcon(entry, normalIconDescriptor, it)
             }
 
             entry.icons.statusBarChipIcon?.let {
                 it.setNotification(entry.sbn, notificationContentDescription)
+                it.setColoredIconsEnabled(coloredIconsEnabled)
                 setIcon(entry, normalIconDescriptor, it)
             }
 
             entry.icons.shelfIcon?.let {
                 it.setNotification(entry.sbn, notificationContentDescription)
+                it.setColoredIconsEnabled(false)
                 setIcon(entry, sensitiveIconDescriptor, it)
             }
 
             entry.icons.aodIcon?.let {
                 it.setNotification(entry.sbn, notificationContentDescription)
+                it.setColoredIconsEnabled(false)
                 setIcon(entry, sensitiveIconDescriptor, it)
             }
         }
@@ -270,16 +332,19 @@ constructor(
             // Construct the status bar icon view.
             val sbIcon = iconBuilder.createIconView(entry)
             sbIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            sbIcon.setColoredIconsEnabled(false)
 
             // Construct the shelf icon view.
             val shelfIcon = iconBuilder.createIconView(entry, context)
             shelfIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
             shelfIcon.visibility = View.INVISIBLE
+            shelfIcon.setColoredIconsEnabled(false)
 
             // Construct the aod icon view.
             val aodIcon = iconBuilder.createIconView(entry)
             aodIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
             aodIcon.setIncreasedSize(true)
+            aodIcon.setColoredIconsEnabled(false)
 
             // Set the icon views' icons
             val (normalIconDescriptor, sensitiveIconDescriptor) = getIconDescriptors(context, entry)

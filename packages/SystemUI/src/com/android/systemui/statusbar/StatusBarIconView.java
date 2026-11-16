@@ -26,6 +26,7 @@ import android.annotation.IntDef;
 import android.app.Notification;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -149,6 +150,11 @@ public class StatusBarIconView extends AnimatedImageView implements StatusIconDi
     @Nullable private StatusBarNotification mNotification;
     @Nullable private BundleEntry mBundleEntry;
     private final boolean mBlocked;
+    /**
+     * Whether coloured notification icons are enabled. When true, the application launcher icon
+     * is shown in place of the original notification small icon for eligible notifications.
+     */
+    private boolean mColoredIconsEnabled = true;
     private Configuration mConfiguration;
     private boolean mNightMode;
     private float mIconScale = 1.0f;
@@ -524,6 +530,17 @@ public class StatusBarIconView extends AnimatedImageView implements StatusIconDi
                 userId = UserHandle.USER_SYSTEM;
             }
 
+            // Coloured icons: replace the notification small icon with the application launcher
+            // icon for eligible notifications. SystemUI-owned icons are excluded so they keep
+            // their original rendering behaviour.
+            if (mColoredIconsEnabled && isNotification()
+                    && !isSystemUIPackage(statusBarIcon.pkg)) {
+                Drawable appIcon = loadApplicationIcon(context, statusBarIcon.pkg);
+                if (appIcon != null) {
+                    return appIcon;
+                }
+            }
+
             final Drawable iconDrawable = statusBarIcon.icon.loadDrawableAsUser(context, userId);
 
             // New in Android 17: look through an AdaptiveIconDrawable for a monochrome
@@ -537,6 +554,37 @@ public class StatusBarIconView extends AnimatedImageView implements StatusIconDi
             }
             return iconDrawable;
         }
+    }
+
+    /**
+     * Returns the application launcher icon for the given package, or {@code null} if it cannot
+     * be resolved. Application icons retain their original colours; no monochromatic tint is
+     * applied here.
+     *
+     * @param packageName the package whose launcher icon should be retrieved
+     */
+    @Nullable
+    private Drawable loadApplicationIcon(Context context, String packageName) {
+        if (packageName == null || packageName.isEmpty()) {
+            return null;
+        }
+        try {
+            return context.getPackageManager().getApplicationIcon(packageName);
+        } catch (PackageManager.NameNotFoundException e) {
+            Log.w(TAG, "Unable to load application icon for " + packageName, e);
+            return null;
+        }
+    }
+
+    /**
+     * Returns whether the given package belongs to SystemUI itself. SystemUI-owned notification
+     * icons are excluded from replacement so they retain their original rendering behaviour.
+     */
+    private boolean isSystemUIPackage(String packageName) {
+        if (packageName == null) {
+            return true;
+        }
+        return packageName.equals(getContext().getPackageName());
     }
 
     public StatusBarIcon getStatusBarIcon() {
@@ -682,6 +730,13 @@ public class StatusBarIconView extends AnimatedImageView implements StatusIconDi
 
     private void updateIconColor() {
         if (mShowsConversation) {
+            setColorFilter(null);
+            return;
+        }
+
+        // Coloured icons: preserve the application icon's original colours and do not apply
+        // the monochromatic status-bar tint.
+        if (mColoredIconsEnabled && isNotification()) {
             setColorFilter(null);
             return;
         }
@@ -972,6 +1027,13 @@ public class StatusBarIconView extends AnimatedImageView implements StatusIconDi
 
     @Override
     public void onDarkChanged(ArrayList<Rect> areas, float darkIntensity, int tint) {
+        // Coloured icons: preserve the application icon's original colours and do not apply
+        // an image tint list. The overflow dot colour is still updated.
+        if (mColoredIconsEnabled && isNotification()) {
+            setImageTintList(null);
+            setDecorColor(tint);
+            return;
+        }
         int areaTint = getTint(areas, this, tint);
         ColorStateList color = ColorStateList.valueOf(areaTint);
         setImageTintList(color);
@@ -1012,5 +1074,19 @@ public class StatusBarIconView extends AnimatedImageView implements StatusIconDi
      */
     public boolean showsConversation() {
         return mShowsConversation;
+    }
+
+    /**
+     * Sets whether coloured notification icons are enabled. When the state changes, the icon
+     * drawable is refreshed so that already-visible notifications reflect the new style
+     * immediately (no reboot or SystemUI restart required).
+     *
+     * @param enabled {@code true} to show application launcher icons in the status bar.
+     */
+    public void setColoredIconsEnabled(boolean enabled) {
+        if (mColoredIconsEnabled != enabled) {
+            mColoredIconsEnabled = enabled;
+            updateDrawable();
+        }
     }
 }

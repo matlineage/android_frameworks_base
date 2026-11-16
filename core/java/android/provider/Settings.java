@@ -6793,6 +6793,16 @@ public final class Settings {
         public static final String SHOW_BATTERY_PERCENT = "status_bar_show_battery_percent";
 
         /**
+         * Whether to display application launcher icons instead of the default notification
+         * small icons in the status bar.
+         *    0 - Show the original notification icon
+         *    1 - Show the application launcher icon (default)
+         * @hide
+         */
+        @Readable
+        public static final String STATUSBAR_COLORED_ICONS = "statusbar_colored_icons";
+
+        /**
          * Whether or not to enable multiple audio focus.
          * When enabled, requires more management by user over application playback activity,
          * for instance pausing media apps when another starts.
