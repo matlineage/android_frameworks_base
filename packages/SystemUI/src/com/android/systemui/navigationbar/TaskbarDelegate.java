@@ -43,24 +43,35 @@ import android.app.StatusBarManager;
 import android.app.StatusBarManager.NavbarFlags;
 import android.app.StatusBarManager.WindowVisibleState;
 import android.content.Context;
+import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.inputmethodservice.InputMethodService.BackDispositionMode;
 import android.inputmethodservice.InputMethodService.ImeWindowVisibility;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.RemoteException;
 import android.os.Trace;
 import android.util.Log;
 import android.view.Display;
+import android.view.Gravity;
+import android.view.Surface;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsets.Type.InsetsType;
 import android.view.WindowInsetsController.Appearance;
 import android.view.WindowInsetsController.Behavior;
+import android.view.WindowManager;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
+import android.window.WindowContext;
+import android.widget.FrameLayout;
+
+import com.android.internal.policy.PhoneWindow;
 import com.android.app.displaylib.DisplayDecorationListener;
 import com.android.app.displaylib.DisplaysWithDecorationsRepositoryCompat;
 import com.android.internal.statusbar.LetterboxDetails;
@@ -73,6 +84,8 @@ import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler;
+import com.android.systemui.navigationbar.spectrum.SpectrumManager;
+import com.android.systemui.navigationbar.spectrum.SpectrumView;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.shared.recents.utilities.Utilities;
@@ -141,6 +154,31 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             };
     private int mDisabledFlags;
     private @WindowVisibleState int mTaskBarWindowState = WINDOW_STATE_SHOWING;
+    private SpectrumManager mSpectrumManager;
+    private SpectrumView mSpectrumView;
+    private WindowManager mSpectrumWindowManager;
+    private Window mSpectrumWindow;
+    private FrameLayout mSpectrumHost;
+    private boolean mSpectrumWindowAdded;
+
+    /** Refreshes the spectrum overlay placement when the display rotates. */
+    private final DisplayManager.DisplayListener mDisplayListener =
+            new DisplayManager.DisplayListener() {
+                @Override
+                public void onDisplayAdded(int displayId) {
+                }
+
+                @Override
+                public void onDisplayRemoved(int displayId) {
+                }
+
+                @Override
+                public void onDisplayChanged(int displayId) {
+                    if (displayId == mDefaultDisplayId) {
+                        updateSpectrumState();
+                    }
+                }
+            };
 
     private @TransitionMode int mTransitionMode;
     private @Appearance int mAppearance;
@@ -351,7 +389,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             mPipOptional.ifPresent(this::addPipExclusionBoundsChangeListener);
             mEdgeBackGestureHandler.setBackAnimation(mBackAnimation);
             mTaskStackChangeListeners.registerTaskStackListener(mTaskStackListener);
+            // Refresh spectrum placement when the display rotates.
+            mDisplayManager.registerDisplayListener(mDisplayListener,
+                    new Handler(Looper.getMainLooper()));
             mInitialized = true;
+            updateSpectrumState();
         } finally {
             Trace.endSection();
         }
@@ -372,7 +414,212 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         mLightBarController.setNavigationBar(null);
         mPipOptional.ifPresent(this::removePipExclusionBoundsChangeListener);
         mTaskStackChangeListeners.unregisterTaskStackListener(mTaskStackListener);
+        mDisplayManager.unregisterDisplayListener(mDisplayListener);
+        stopSpectrum();
         mInitialized = false;
+    }
+
+    /**
+     * Starts or stops the loopback audio spectrum capture based on whether the task bar is
+     * currently hosting the navigation bar and visible.
+     *
+     * On devices where the navigation bar is provided by the task bar instead of the classic
+     * {@code NavigationBar}, the start of the spectrum capture has to be driven from this path;
+     * the classic nav bar implementation lives in
+     * {@code com.android.systemui.navigationbar.views.NavigationBarInflaterView}.
+     */
+    private void updateSpectrumState() {
+        try {
+            Log.d(TAG, "updateSpectrumState: visible=" + isWindowVisible()
+                    + " transientShowing=" + mTaskbarTransientShowing
+                    + " mSpectrumWindowAdded=" + mSpectrumWindowAdded);
+            if (isWindowVisible() || mTaskbarTransientShowing) {
+                ensureSpectrumManagerCreated();
+                if (mSpectrumView == null) {
+                    mSpectrumView = new SpectrumView(mContext);
+                }
+                attachSpectrumHostIfNeeded();
+                mSpectrumManager.setSpectrumView(mSpectrumView);
+                mSpectrumManager.start();
+                Log.d(TAG, "updateSpectrumState: spectrum started");
+            } else {
+                detachSpectrumHost();
+                if (mSpectrumManager != null) {
+                    mSpectrumManager.stop();
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "updateSpectrumState: exception: " + e.getMessage(), e);
+        }
+    }
+
+    private void ensureSpectrumManagerCreated() {
+        if (mSpectrumManager == null) {
+            mSpectrumManager = new SpectrumManager(mContext);
+        }
+    }
+
+    private void attachSpectrumHostIfNeeded() {
+        Log.d(TAG, "attachSpectrumHostIfNeeded: mSpectrumWindowAdded=" + mSpectrumWindowAdded
+                + " mSpectrumHost=" + mSpectrumHost);
+        // A SpectrumView can only have one parent. Detach it from any previous host before
+        // re-adding, otherwise addView throws "View already has a parent" and the window is
+        // never shown (the exception is swallowed below).
+        if (mSpectrumView != null && mSpectrumView.getParent() instanceof ViewGroup) {
+            ((ViewGroup) mSpectrumView.getParent()).removeView(mSpectrumView);
+        }
+
+        // Create the host FrameLayout once; on re-attach (e.g. after rotation) we reuse it and
+        // just refresh the window manager layout params.
+        if (mSpectrumHost == null) {
+            FrameLayout host = new FrameLayout(mContext);
+            //host.setBackgroundColor(0xFFFF0000); // Test: red rectangle
+            FrameLayout.LayoutParams hostParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            mSpectrumHost = host;
+        }
+        // (Re)attach the SpectrumView to the host on every attach so it survives rotation.
+        if (mSpectrumView.getParent() != mSpectrumHost) {
+            mSpectrumHost.addView(mSpectrumView,
+                    new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        mSpectrumView.setVisibility(View.VISIBLE);
+
+        if (mSpectrumWindowManager == null) {
+            // Use SystemUI's own window manager (the same path the status bar window itself is
+            // added through), not a window-context one, so system window types are accepted.
+            mSpectrumWindowManager = mContext.getSystemService(WindowManager.class);
+        }
+
+        final int spectrumBarSize = mContext.getResources().getDimensionPixelSize(
+                com.android.internal.R.dimen.navigation_bar_height);
+
+        // Place the overlay to mirror the task bar window placement. The task bar lives on the
+        // display bottom in portrait and moves to the start/end side on landscape only for
+        // phone-button navigation; gesture navigation keeps a bottom-based task bar/nav pill, so
+        // the spectrum overlay should stay at the bottom there. Mirrored from
+        // TaskbarActivityContext.populatePhoneButtonNavModeWindowLayoutParams / setTaskbarWindowSize.
+        // Re-applied on every attach so rotation (signaled via mDisplayListener -> updateSpectrumState)
+        // actually moves the overlay instead of leaving it pinned to the boot-time edge.
+        final int rotation;
+        final Display display = mDisplayManager.getDisplay(mDefaultDisplayId);
+        rotation = display == null ? Surface.ROTATION_0 : display.getRotation();
+
+        int gravity;
+        int width;
+        int height;
+        if (QuickStepContract.isGesturalMode(mNavigationMode)) {
+            // Gesture navigation: task bar / nav pill is bottom-based, keep the overlay at the
+            // bottom edge.
+            gravity = Gravity.BOTTOM;
+            width = ViewGroup.LayoutParams.MATCH_PARENT;
+            height = spectrumBarSize;
+            mSpectrumView.setFlip(false);
+        } else {
+            // Legacy (3-button) navigation: bottom in portrait, start/end side in landscape.
+            switch (rotation) {
+                case Surface.ROTATION_90:
+                    // Landscape: nav bar on the right edge.
+                    gravity = Gravity.END;
+                    width = spectrumBarSize;
+                    height = ViewGroup.LayoutParams.MATCH_PARENT;
+                    mSpectrumView.setFlip(true);
+                    break;
+                case Surface.ROTATION_270:
+                    // Reverse landscape: nav bar on the left edge.
+                    gravity = Gravity.START;
+                    width = spectrumBarSize;
+                    height = ViewGroup.LayoutParams.MATCH_PARENT;
+                    mSpectrumView.setFlip(false);
+                    break;
+                case Surface.ROTATION_0:
+                case Surface.ROTATION_180:
+                default:
+                    // Portrait: nav bar at the bottom edge.
+                    gravity = Gravity.BOTTOM;
+                    width = ViewGroup.LayoutParams.MATCH_PARENT;
+                    height = spectrumBarSize;
+                    mSpectrumView.setFlip(false);
+                    break;
+            }
+        }
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                width,
+                height,
+                0, 0, WindowManager.LayoutParams.TYPE_STATUS_BAR_SUB_PANEL,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_SLIPPERY,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = gravity;
+        params.width = width;
+        params.height = height;
+        params.setTitle("SpectrumOverlay");
+        params.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        params.setFitInsetsTypes(0 /* types */);
+        params.setTrustedOverlay();
+        params.windowAnimations = 0;
+        params.privateFlags |= WindowManager.LayoutParams.PRIVATE_FLAG_COLOR_SPACE_AGNOSTIC;
+        params.privateFlags |= WindowManager.LayoutParams.PRIVATE_FLAG_NO_MOVE_ANIMATION;
+
+        if (mSpectrumWindowAdded && mSpectrumHost.getParent() != null) {
+            // Already added to the window manager: refresh layout params in place (e.g. after
+            // rotation) instead of removing and re-adding the window.
+            Log.d(TAG, "attachSpectrumHostIfNeeded: updating layout params, width="
+                    + params.width + " height=" + params.height + " gravity=" + params.gravity);
+            try {
+                mSpectrumWindowManager.updateViewLayout(mSpectrumHost, params);
+            } catch (Exception e) {
+                Log.e(TAG, "attachSpectrumHostIfNeeded: updateViewLayout failed: "
+                        + e.getMessage(), e);
+            }
+            return;
+        }
+
+        Log.d(TAG, "attachSpectrumHostIfNeeded: adding view, width="
+                + params.width + " height=" + params.height + " gravity=" + params.gravity
+                + " type=" + params.type);
+        try {
+            mSpectrumWindowManager.addView(mSpectrumHost, params);
+            mSpectrumWindowAdded = true;
+            Log.d(TAG, "attachSpectrumHostIfNeeded: spectrum host added to window manager");
+            mSpectrumHost.post(() -> Log.d(TAG,
+                    "spectrum host laid out: width=" + mSpectrumHost.getWidth()
+                            + " height=" + mSpectrumHost.getHeight()));
+        } catch (Exception e) {
+            Log.e(TAG, "attachSpectrumHostIfNeeded: failed to add spectrum view: " + e.getMessage(), e);
+        }
+    }
+
+    private void detachSpectrumHost() {
+        Log.d(TAG, "detachSpectrumHost: removing spectrum host from window manager");
+        if (mSpectrumHost != null) {
+            // Detach the SpectrumView from the host before tearing the host down, otherwise a
+            // later re-attach would fail with "View already has a parent" and the spectrum
+            // window would never be shown again.
+            if (mSpectrumView != null && mSpectrumView.getParent() == mSpectrumHost) {
+                mSpectrumHost.removeView(mSpectrumView);
+            }
+            // The host may never have been added to the window manager (e.g. if addView failed
+            // earlier), so only removeView when it actually has a parent window manager.
+            if (mSpectrumWindowManager != null && mSpectrumHost.getParent() != null) {
+                mSpectrumWindowManager.removeView(mSpectrumHost);
+            }
+            mSpectrumHost = null;
+        }
+        mSpectrumWindowAdded = false;
+    }
+
+    private void stopSpectrum() {
+        Log.d(TAG, "stopSpectrum: stopping spectrum");
+        detachSpectrumHost();
+        if (mSpectrumManager != null) {
+            mSpectrumManager.stop();
+        }
     }
 
     void addPipExclusionBoundsChangeListener(Pip pip) {
@@ -553,6 +800,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
                 && mTaskBarWindowState != state) {
             mTaskBarWindowState = state;
             updateSysuiFlags();
+            updateSpectrumState();
         }
     }
 
@@ -606,6 +854,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             mTaskbarTransientShowing = true;
             onTransientStateChanged();
         }
+        updateSpectrumState();
     }
 
     @Override
@@ -667,6 +916,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             mTaskbarTransientShowing = false;
             onTransientStateChanged();
         }
+        updateSpectrumState();
     }
 
     private void onTransientStateChanged() {
@@ -695,6 +945,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     public void onNavigationModeChanged(int mode) {
         mNavigationMode = mode;
         mEdgeBackGestureHandler.onNavigationModeChanged(mode);
+        updateSpectrumState();
     }
 
     private boolean isWindowVisible() {
