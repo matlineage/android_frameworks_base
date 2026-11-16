@@ -103,6 +103,7 @@ import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.os.UserHandle;
+import android.provider.Settings;
 import android.service.voice.VoiceInteractionManagerInternal;
 import android.util.Slog;
 import android.view.RemoteAnimationDefinition;
@@ -573,8 +574,9 @@ class ActivityClientController extends IActivityClientController.Stub {
             Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "finishActivity");
             try {
                 final boolean res;
-                final boolean finishWithRootActivity =
-                        finishTask == Activity.FINISH_TASK_WITH_ROOT_ACTIVITY;
+                final boolean isLastRunningActivity = isTopActivityInTaskFragment(r);
+                final boolean finishWithRootActivity = (isLastRunningActivity && shouldFinishTaskOnBackPressed() == 2)
+                        || finishTask == Activity.FINISH_TASK_WITH_ROOT_ACTIVITY;
                 mTaskSupervisor.getBackgroundActivityLaunchController()
                         .onActivityRequestedFinishing(r);
                 if (finishTask == Activity.FINISH_TASK_WITH_ACTIVITY
@@ -1951,9 +1953,9 @@ class ActivityClientController extends IActivityClientController.Stub {
         return activity.getTaskFragment().topRunningActivity() == activity;
     }
 
-    private void requestCallbackFinish(IRequestFinishCallback callback) {
+    private void requestCallbackFinish(IRequestFinishCallback callback, boolean shouldFinishTask) {
         try {
-            callback.requestFinish();
+            callback.requestFinish(shouldFinishTask);
         } catch (RemoteException e) {
             Slog.e(TAG, "Failed to invoke request finish callback", e);
         }
@@ -1963,6 +1965,7 @@ class ActivityClientController extends IActivityClientController.Stub {
     public void onBackPressed(IBinder token, IRequestFinishCallback callback) {
         final long origId = Binder.clearCallingIdentity();
         try {
+            final boolean finishTask = shouldFinishTaskOnBackPressed() >= 1;
             synchronized (mGlobalLock) {
                 final ActivityRecord r = ActivityRecord.isInRootTaskLocked(token);
                 if (r == null) return;
@@ -1978,14 +1981,14 @@ class ActivityClientController extends IActivityClientController.Stub {
                     return;
                 }
 
-                if (shouldMoveTaskToBack(r, root)) {
+                if (!finishTask && shouldMoveTaskToBack(r, root)) {
                     moveActivityTaskToBackInner(task);
                     return;
                 }
             }
 
             // The default option for handling the back button is to finish the Activity.
-            requestCallbackFinish(callback);
+            requestCallbackFinish(callback, finishTask);
         } finally {
             Binder.restoreCallingIdentity(origId);
         }
@@ -2032,6 +2035,11 @@ class ActivityClientController extends IActivityClientController.Stub {
                 && isTopActivityInTaskFragment(r)
                 && rootActivity.isLaunchSourceType(ActivityRecord.LAUNCH_SOURCE_TYPE_HOME)
                 && ActivityRecord.isMainIntent(baseActivityIntent);
+    }
+
+    private int shouldFinishTaskOnBackPressed() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                "transient_task_mode", 1);
     }
 
     @Override
