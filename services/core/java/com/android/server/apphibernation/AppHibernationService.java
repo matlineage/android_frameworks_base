@@ -975,10 +975,7 @@ public final class AppHibernationService extends SystemService {
     }
 
     private static boolean isDeviceConfigAppHibernationEnabled() {
-        return DeviceConfig.getBoolean(
-                NAMESPACE_APP_HIBERNATION,
-                KEY_APP_HIBERNATION_ENABLED,
-                false /* defaultValue */);
+        return false;
     }
 
     /**
