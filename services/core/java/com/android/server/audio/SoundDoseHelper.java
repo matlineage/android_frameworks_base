@@ -1013,7 +1013,7 @@ public class SoundDoseHelper {
     @GuardedBy("mSafeMediaVolumeStateLock")
     private void updateSafeMediaVolume_l(String caller) {
         boolean safeMediaVolumeBypass =
-                SystemProperties.getBoolean(SYSTEM_PROPERTY_SAFEMEDIA_BYPASS, false)
+                SystemProperties.getBoolean(SYSTEM_PROPERTY_SAFEMEDIA_BYPASS, true)
                         || mEnableCsd.get();
         boolean safeMediaVolumeForce = SystemProperties.getBoolean(SYSTEM_PROPERTY_SAFEMEDIA_FORCE,
                 false);
