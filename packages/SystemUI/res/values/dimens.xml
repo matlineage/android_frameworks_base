@@ -19,6 +19,9 @@
     <!-- Recommended minimum clickable element dimension -->
     <dimen name="min_clickable_item_size">48dp</dimen>
 
+    <!-- Height of the spectrum visualizer on the lock screen (128dp). -->
+    <dimen name="spectrum_lockscreen_height">256dp</dimen>
+
     <dimen name="remote_input_view_text_stroke">2dp</dimen>
 
     <!-- thickness (height) of the dead zone at the top of the navigation bar,

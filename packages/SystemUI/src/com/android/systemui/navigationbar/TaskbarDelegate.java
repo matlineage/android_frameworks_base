@@ -100,6 +100,7 @@ import com.android.systemui.statusbar.phone.AutoHideController;
 import com.android.systemui.statusbar.phone.LightBarController;
 import com.android.systemui.statusbar.phone.LightBarTransitionsController;
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager;
+import com.android.systemui.statusbar.NotificationShadeWindowController;
 import com.android.wm.shell.back.BackAnimation;
 import com.android.wm.shell.pip.Pip;
 
@@ -160,6 +161,10 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private Window mSpectrumWindow;
     private FrameLayout mSpectrumHost;
     private boolean mSpectrumWindowAdded;
+    private NotificationShadeWindowController mNotificationShadeWindowController;
+    private SpectrumView mLockscreenSpectrumView;
+    private boolean mLockscreenSpectrumAdded;
+    private boolean mKeyguardShowing;
 
     /** Refreshes the spectrum overlay placement when the display rotates. */
     private final DisplayManager.DisplayListener mDisplayListener =
@@ -282,6 +287,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             LightBarTransitionsController.Factory lightBarTransitionsControllerFactory,
             StatusBarKeyguardViewManager statusBarKeyguardViewManager,
             StatusBarStateController statusBarStateController,
+            NotificationShadeWindowController notificationShadeWindowController,
             @Background Handler bgHandler) {
         mLightBarTransitionsControllerFactory = lightBarTransitionsControllerFactory;
 
@@ -293,6 +299,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         };
         mStatusBarKeyguardViewManager = statusBarKeyguardViewManager;
         mStatusBarKeyguardViewManager.setTaskbarDelegate(this);
+        mNotificationShadeWindowController = notificationShadeWindowController;
         mStatusBarStateController = statusBarStateController;
     }
 
@@ -382,6 +389,8 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             Display display = mDisplayManager.getDisplay(displayId);
             mWindowContext = mContext.createWindowContext(display, TYPE_APPLICATION, null);
             mScreenPinningNotify = new ScreenPinningNotify(mWindowContext);
+            mStatusBarStateController.addCallback(mStatusBarStateListener);
+            mKeyguardShowing = isKeyguardShowing(mStatusBarStateController.getState());
             // Set initial state for any listeners
             updateSysuiFlags();
             mAutoHideController.setNavigationBar(mAutoHideUiElement);
@@ -415,6 +424,8 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         mPipOptional.ifPresent(this::removePipExclusionBoundsChangeListener);
         mTaskStackChangeListeners.unregisterTaskStackListener(mTaskStackListener);
         mDisplayManager.unregisterDisplayListener(mDisplayListener);
+        mStatusBarStateController.removeCallback(mStatusBarStateListener);
+        stopLockscreenSpectrumLocked();
         stopSpectrum();
         mInitialized = false;
     }
@@ -430,22 +441,22 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
      */
     private void updateSpectrumState() {
         try {
-            Log.d(TAG, "updateSpectrumState: visible=" + isWindowVisible()
+            Log.d(TAG, "updateSpectrumState: keyguardShowing=" + mKeyguardShowing
+                    + " visible=" + isWindowVisible()
                     + " transientShowing=" + mTaskbarTransientShowing
-                    + " mSpectrumWindowAdded=" + mSpectrumWindowAdded);
-            if (isWindowVisible() || mTaskbarTransientShowing) {
-                ensureSpectrumManagerCreated();
-                if (mSpectrumView == null) {
-                    mSpectrumView = new SpectrumView(mContext);
-                }
-                attachSpectrumHostIfNeeded();
-                mSpectrumManager.setSpectrumView(mSpectrumView);
-                mSpectrumManager.start();
-                Log.d(TAG, "updateSpectrumState: spectrum started");
+                    + " mSpectrumWindowAdded=" + mSpectrumWindowAdded
+                    + " mLockscreenSpectrumAdded=" + mLockscreenSpectrumAdded);
+            if (mKeyguardShowing) {
+                // While the keyguard is showing the spectrum lives on the lock screen, behind the
+                // keyguard content. The navbar variant must stay off so there is never two at once.
+                stopNavbarSpectrumLocked();
+                startLockscreenSpectrum();
             } else {
-                detachSpectrumHost();
-                if (mSpectrumManager != null) {
-                    mSpectrumManager.stop();
+                stopLockscreenSpectrumLocked();
+                if (isWindowVisible() || mTaskbarTransientShowing) {
+                    startNavbarSpectrum();
+                } else {
+                    stopNavbarSpectrumLocked();
                 }
             }
         } catch (Exception e) {
@@ -488,8 +499,8 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         mSpectrumView.setVisibility(View.VISIBLE);
 
         if (mSpectrumWindowManager == null) {
-            // Use SystemUI's own window manager (the same path the status bar window itself is
-            // added through), not a window-context one, so system window types are accepted.
+            // Use SystemUI's own window manager (the same window the task bar uses), not a
+            // window-context one, so system window types are accepted.
             mSpectrumWindowManager = mContext.getSystemService(WindowManager.class);
         }
 
@@ -587,9 +598,10 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             mSpectrumWindowManager.addView(mSpectrumHost, params);
             mSpectrumWindowAdded = true;
             Log.d(TAG, "attachSpectrumHostIfNeeded: spectrum host added to window manager");
-            mSpectrumHost.post(() -> Log.d(TAG,
-                    "spectrum host laid out: width=" + mSpectrumHost.getWidth()
-                            + " height=" + mSpectrumHost.getHeight()));
+            final FrameLayout spectrumHost = mSpectrumHost;
+            spectrumHost.post(() -> Log.d(TAG,
+                    "spectrum host laid out: width=" + spectrumHost.getWidth()
+                            + " height=" + spectrumHost.getHeight()));
         } catch (Exception e) {
             Log.e(TAG, "attachSpectrumHostIfNeeded: failed to add spectrum view: " + e.getMessage(), e);
         }
@@ -620,6 +632,128 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         if (mSpectrumManager != null) {
             mSpectrumManager.stop();
         }
+    }
+
+    /**
+     * Starts the navbar variant of the spectrum. It is only ever shown once the keyguard is no
+     * longer showing (i.e. after unlocking), so the navbar and lock screen variants never appear
+     * at the same time.
+     */
+    private void startNavbarSpectrum() {
+        ensureSpectrumManagerCreated();
+        if (mSpectrumView == null) {
+            mSpectrumView = new SpectrumView(mContext);
+        }
+        attachSpectrumHostIfNeeded();
+        mSpectrumManager.setSpectrumView(mSpectrumView);
+        mSpectrumManager.start();
+        Log.d(TAG, "startNavbarSpectrum: spectrum started");
+    }
+
+    /** Detaches the navbar spectrum host and stops capture. */
+    private void stopNavbarSpectrumLocked() {
+        detachSpectrumHost();
+        if (mSpectrumManager != null) {
+            mSpectrumManager.stop();
+        }
+    }
+
+    /**
+     * Starts the lock screen variant of the spectrum. It lives inside the full-screen notification
+     * shade window at the very bottom (index 0), i.e. above the wallpaper but below all keyguard
+     * content (lock icon, charge state, ...), and it never intercepts touches to the lock screen.
+     */
+    private void startLockscreenSpectrum() {
+        if (mNotificationShadeWindowController == null) {
+            return;
+        }
+        ensureSpectrumManagerCreated();
+        if (mLockscreenSpectrumView == null) {
+            mLockscreenSpectrumView = new SpectrumView(mContext);
+            mLockscreenSpectrumView.setVisibility(View.VISIBLE);
+            // Sit below all keyguard content and never interfere with touches to the lock screen.
+            mLockscreenSpectrumView.setClickable(false);
+            mLockscreenSpectrumView.setFocusable(false);
+            mLockscreenSpectrumView.setOnTouchListener((v, event) -> false);
+        }
+        attachLockscreenSpectrumHostIfNeeded();
+        mSpectrumManager.setSpectrumView(mLockscreenSpectrumView);
+        mSpectrumManager.start();
+        Log.d(TAG, "startLockscreenSpectrum: spectrum started");
+    }
+
+    /** Removes the lock screen spectrum view and stops capture. */
+    private void stopLockscreenSpectrumLocked() {
+        detachLockscreenSpectrumHost();
+        if (mSpectrumManager != null) {
+            mSpectrumManager.stop();
+        }
+    }
+
+    private void attachLockscreenSpectrumHostIfNeeded() {
+        Log.d(TAG, "attachLockscreenSpectrumHostIfNeeded: mLockscreenSpectrumAdded="
+                + mLockscreenSpectrumAdded + " parent=" + mLockscreenSpectrumView.getParent());
+        // A view can only have one parent. Detach it from any previous host before re-adding.
+        if (mLockscreenSpectrumView.getParent() instanceof ViewGroup) {
+            ((ViewGroup) mLockscreenSpectrumView.getParent()).removeView(mLockscreenSpectrumView);
+        }
+
+        final int height = mContext.getResources().getDimensionPixelSize(
+                com.android.systemui.res.R.dimen.spectrum_lockscreen_height);
+        final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, height);
+        params.gravity = Gravity.BOTTOM;
+
+        if (mLockscreenSpectrumAdded && mLockscreenSpectrumView.getParent() != null) {
+            // Already in the notification shade window: refresh the layout params (e.g. after rotation).
+            mLockscreenSpectrumView.setLayoutParams(params);
+            mLockscreenSpectrumView.requestLayout();
+            Log.d(TAG,
+                    "attachLockscreenSpectrumHostIfNeeded: refreshing lockscreen spectrum layout");
+            return;
+        }
+
+        final ViewGroup windowRootView = mNotificationShadeWindowController.getWindowRootView();
+        if (windowRootView == null) {
+            Log.e(TAG, "attachLockscreenSpectrumHostIfNeeded: notification shade window root is null");
+            return;
+        }
+        try {
+            // Index 0 puts the view at the bottom of the full-screen notification shade window:
+            // above the wallpaper but behind every keyguard view (lock icon, charge state, ...).
+            windowRootView.addView(mLockscreenSpectrumView, 0, params);
+            mLockscreenSpectrumAdded = true;
+            Log.d(TAG,
+                    "attachLockscreenSpectrumHostIfNeeded: lockscreen spectrum added to notification shade window");
+        } catch (Exception e) {
+            Log.e(TAG, "attachLockscreenSpectrumHostIfNeeded: failed to add lockscreen spectrum: "
+                    + e.getMessage(), e);
+        }
+    }
+
+    private void detachLockscreenSpectrumHost() {
+        Log.d(TAG, "detachLockscreenSpectrumHost: removing lockscreen spectrum from notification shade window");
+        if (mLockscreenSpectrumView != null
+                && mLockscreenSpectrumView.getParent() instanceof ViewGroup) {
+            ((ViewGroup) mLockscreenSpectrumView.getParent()).removeView(mLockscreenSpectrumView);
+        }
+        mLockscreenSpectrumAdded = false;
+    }
+
+    private final StatusBarStateController.StateListener mStatusBarStateListener =
+            new StatusBarStateController.StateListener() {
+                @Override
+                public void onStateChanged(int newState) {
+                    boolean keyguardShowing = isKeyguardShowing(newState);
+                    if (keyguardShowing != mKeyguardShowing) {
+                        mKeyguardShowing = keyguardShowing;
+                        updateSpectrumState();
+                    }
+                }
+            };
+
+    private static boolean isKeyguardShowing(int state) {
+        return state == StatusBarState.KEYGUARD || state == StatusBarState.SHADE_LOCKED;
     }
 
     void addPipExclusionBoundsChangeListener(Pip pip) {
