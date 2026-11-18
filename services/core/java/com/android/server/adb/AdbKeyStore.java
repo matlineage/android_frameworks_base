@@ -291,7 +291,7 @@ class AdbKeyStore {
         return Settings.Global.getLong(
                 mContext.getContentResolver(),
                 Settings.Global.ADB_ALLOWED_CONNECTION_TIME,
-                Settings.Global.DEFAULT_ADB_ALLOWED_CONNECTION_TIME);
+                0L);
     }
 
     /**
