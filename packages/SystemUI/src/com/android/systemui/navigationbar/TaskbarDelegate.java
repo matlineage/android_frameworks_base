@@ -53,6 +53,7 @@ import android.os.Looper;
 import android.os.RemoteException;
 import android.os.Trace;
 import android.util.Log;
+import android.util.SparseArray;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
@@ -76,6 +77,7 @@ import com.android.app.displaylib.DisplayDecorationListener;
 import com.android.app.displaylib.DisplaysWithDecorationsRepositoryCompat;
 import com.android.internal.statusbar.LetterboxDetails;
 import com.android.internal.view.AppearanceRegion;
+import com.android.app.displaylib.PerDisplayRepository;
 import com.android.systemui.Dumpable;
 import com.android.systemui.LauncherProxyService;
 import com.android.systemui.dagger.SysUISingleton;
@@ -97,12 +99,15 @@ import com.android.systemui.statusbar.AutoHideUiElement;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.phone.AutoHideController;
+import com.android.systemui.statusbar.phone.AutoHideControllerStore;
 import com.android.systemui.statusbar.phone.LightBarController;
 import com.android.systemui.statusbar.phone.LightBarTransitionsController;
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager;
 import com.android.systemui.statusbar.NotificationShadeWindowController;
 import com.android.wm.shell.back.BackAnimation;
 import com.android.wm.shell.pip.Pip;
+
+import dagger.Lazy;
 
 import kotlinx.coroutines.CoroutineDispatcher;
 
@@ -135,6 +140,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private int mDefaultDisplayId;
     @NavbarFlags
     private int mNavbarFlags;
+    private final Lazy<PerDisplayRepository<SysUiState>> mPerDisplaySysUiStateRepository;
+    private final Lazy<AutoHideControllerStore> mAutoHideControllerStore;
+    /** Transient taskbar state of connected displays, keyed by display id. */
+    private final SparseArray<SecondaryDisplayAutoHideUiElement> mSecondaryAutoHideUiElements =
+            new SparseArray<>();
     private final NavBarHelper.NavbarTaskbarStateUpdater mNavbarTaskbarStateUpdater =
             new NavBarHelper.NavbarTaskbarStateUpdater() {
                 @Override
@@ -288,7 +298,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             StatusBarKeyguardViewManager statusBarKeyguardViewManager,
             StatusBarStateController statusBarStateController,
             NotificationShadeWindowController notificationShadeWindowController,
-            @Background Handler bgHandler) {
+            @Background Handler bgHandler,
+            Lazy<PerDisplayRepository<SysUiState>> perDisplaySysUiStateRepository,
+            Lazy<AutoHideControllerStore> autoHideControllerStore) {
+        mPerDisplaySysUiStateRepository = perDisplaySysUiStateRepository;
+        mAutoHideControllerStore = autoHideControllerStore;
         mLightBarTransitionsControllerFactory = lightBarTransitionsControllerFactory;
 
         mContext = context;
@@ -345,6 +359,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     @Override
     public void onDisplayRemoved(int displayId) {
         mDisplayDecorationListener.onDisplayRemoved(displayId);
+        mSecondaryAutoHideUiElements.remove(displayId);
     }
 
     @Override
@@ -913,6 +928,8 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     public void setImeWindowStatus(int displayId, @ImeWindowVisibility int vis,
             @BackDispositionMode int backDisposition, boolean showImeSwitcherButton) {
         if (displayId != mDefaultDisplayId) {
+            updateSecondaryDisplayImeFlags(displayId, vis, backDisposition,
+                    showImeSwitcherButton);
             return;
         }
 
@@ -925,6 +942,26 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
         mNavbarFlags = flags;
         updateSysuiFlags();
+    }
+
+    /**
+     * Taskbars on connected displays are created by Launcher, so propagate the IME state of
+     * those displays to their own {@link SysUiState}. Otherwise the taskbar keeps intercepting
+     * touches meant for the IME drawn navigation bar (e.g. the IME dismiss button).
+     */
+    private void updateSecondaryDisplayImeFlags(int displayId, @ImeWindowVisibility int vis,
+            @BackDispositionMode int backDisposition, boolean showImeSwitcherButton) {
+        final SysUiState state = mPerDisplaySysUiStateRepository.get().get(displayId);
+        if (state == null) {
+            return;
+        }
+        final int flags = Utilities.updateNavbarFlagsFromIme(0, backDisposition,
+                mNavBarHelper.isImeVisible(vis), showImeSwitcherButton);
+        state.setFlag(SYSUI_STATE_IME_VISIBLE, (flags & NAVBAR_IME_VISIBLE) != 0)
+                .setFlag(SYSUI_STATE_IME_SWITCHER_BUTTON_VISIBLE,
+                        (flags & NAVBAR_IME_SWITCHER_BUTTON_VISIBLE) != 0)
+                .setFlag(SYSUI_STATE_BACK_DISMISS_IME, (flags & NAVBAR_BACK_DISMISS_IME) != 0)
+                .commitUpdate();
     }
 
     @Override
@@ -978,10 +1015,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void showTransient(int displayId, @InsetsType int types, boolean isGestureOnSystemBar) {
-        if (displayId != mDefaultDisplayId) {
+        if ((types & WindowInsets.Type.navigationBars()) == 0) {
             return;
         }
-        if ((types & WindowInsets.Type.navigationBars()) == 0) {
+        if (displayId != mDefaultDisplayId) {
+            setSecondaryDisplayTransient(displayId, true);
             return;
         }
         if (!mTaskbarTransientShowing) {
@@ -993,10 +1031,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void abortTransient(int displayId, @InsetsType int types) {
-        if (displayId != mDefaultDisplayId) {
+        if ((types & WindowInsets.Type.navigationBars()) == 0) {
             return;
         }
-        if ((types & WindowInsets.Type.navigationBars()) == 0) {
+        if (displayId != mDefaultDisplayId) {
+            setSecondaryDisplayTransient(displayId, false);
             return;
         }
         clearTransient();
@@ -1043,6 +1082,55 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     @Override
     public void appTransitionFinished(int displayId) {
         appTransitionPending(false);
+    }
+
+    /**
+     * Taskbars on connected displays are created by Launcher, so nothing would ever ask WM to
+     * hide their transient bars again (e.g. after the power button panic gesture). Hand them to
+     * the {@link AutoHideController} of their display instead.
+     */
+    private void setSecondaryDisplayTransient(int displayId, boolean showing) {
+        SecondaryDisplayAutoHideUiElement element = mSecondaryAutoHideUiElements.get(displayId);
+        if (element == null) {
+            if (!showing) {
+                return;
+            }
+            final AutoHideController controller =
+                    mAutoHideControllerStore.get().forDisplay(displayId);
+            if (controller == null) {
+                return;
+            }
+            element = new SecondaryDisplayAutoHideUiElement(controller);
+            mSecondaryAutoHideUiElements.put(displayId, element);
+        }
+        element.mTransientShowing = showing;
+        if (showing) {
+            element.mController.touchAutoHide();
+        }
+    }
+
+    private static class SecondaryDisplayAutoHideUiElement implements AutoHideUiElement {
+        final AutoHideController mController;
+        boolean mTransientShowing;
+
+        SecondaryDisplayAutoHideUiElement(AutoHideController controller) {
+            mController = controller;
+            mController.setNavigationBar(this);
+        }
+
+        @Override
+        public void synchronizeState() {
+        }
+
+        @Override
+        public boolean isVisible() {
+            return mTransientShowing;
+        }
+
+        @Override
+        public void hide() {
+            mTransientShowing = false;
+        }
     }
 
     private void clearTransient() {
