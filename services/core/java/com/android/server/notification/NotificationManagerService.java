@@ -13473,14 +13473,9 @@ public class NotificationManagerService extends SystemService {
                 ArraySet<ComponentName> approved = queryPackageForServices(packageName,
                         MATCH_DIRECT_BOOT_AWARE | MATCH_DIRECT_BOOT_UNAWARE, USER_SYSTEM);
                 if (approved.contains(assistantCn)) {
-                    if (addToDefault) {
-                        // add the default loaded from config file to mDefaultComponents and
-                        // mDefaultPackages
-                        addDefaultComponentOrPackage(assistantCn.flattenToString());
-                    } else {
-                        // otherwise, store in the mDefaultFromConfig for NAS settings migration
-                        mDefaultFromConfig = assistantCn;
-                    }
+                    // Keep the configured default as the known NAS target for UI/toggle,
+                    // but do not auto-approve it by default.
+                    mDefaultFromConfig = assistantCn;
                 }
             }
         }
