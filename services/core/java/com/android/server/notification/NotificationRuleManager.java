@@ -1026,9 +1026,10 @@ public class NotificationRuleManager {
                 .setEditIntentAction("android.settings.NOTIFICATION_BUNDLES")
                 .addFilter(new NotificationRule.Filter.Builder()
                         .setStaticBundleTypes(List.of(DEFAULT_ALLOWED_ADJUSTMENT_KEY_TYPES))
-                        // bundles are only enabled for primary users by default
+                        // static bundles are disabled by default
                         .addUser(UserHandle.of(userId))
                         .build())
+                .setEnabled(false)
                 .setCanBeDisabled(true)
                 .build();
     }
