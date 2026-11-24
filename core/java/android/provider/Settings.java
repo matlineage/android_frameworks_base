@@ -17741,7 +17741,7 @@ public final class Settings {
          * auto restrict the app if it has bad behavior (e.g. hold wakelock for long time).
          *
          * Type: boolean (0 for false, 1 for true)
-         * Default: 1
+         * Default: 0
          *
          * @hide
          */
