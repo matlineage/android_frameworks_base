@@ -147,7 +147,7 @@ constructor(
                 .map {
                     secureSettings.getIntForUser(
                         name = Settings.Secure.LOCK_SCREEN_NOTIFICATION_MINIMALISM,
-                        default = 1,
+                        default = 0,
                         userHandle = UserHandle.USER_CURRENT,
                     ) == 1
                 }
