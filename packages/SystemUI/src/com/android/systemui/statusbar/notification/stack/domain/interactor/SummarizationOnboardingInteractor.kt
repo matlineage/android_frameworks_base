@@ -67,7 +67,7 @@ constructor(
     private val onboardingUnseen: Flow<Boolean> =
         sharedPreferencesInteractor.sharedPreferences
             .flatMapLatestConflated { prefs ->
-                prefs?.observeBoolean(KEY_SHOW_SUMMARIZATION_ONBOARDING, true) ?: flowOf(false)
+                prefs?.observeBoolean(KEY_SHOW_SUMMARIZATION_ONBOARDING, false) ?: flowOf(false)
             }
             .distinctUntilChanged()
 
