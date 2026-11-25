@@ -13640,10 +13640,8 @@ public class NotificationManagerService extends SystemService {
             synchronized (mLock) {
                 Set<String> types = new HashSet<>(Set.of(DEFAULT_ALLOWED_ADJUSTMENTS));
                 types.removeAll(deniedAdjustmentsForUser(userId));
-                if (nmContextualDisplayLaunch()) {
-                    if (!mNotificationRuleManager.isClassificationAdjustmentAllowed(userId)) {
-                        types.remove(KEY_TYPE);
-                    }
+                if (!mNotificationRuleManager.isClassificationAdjustmentAllowed(userId)) {
+                    types.remove(KEY_TYPE);
                 }
                 return types;
             }
@@ -13651,7 +13649,7 @@ public class NotificationManagerService extends SystemService {
 
         protected boolean isAdjustmentAllowed(@UserIdInt int userId, String type) {
             synchronized (mLock) {
-                if (nmContextualDisplayLaunch() && KEY_TYPE.equals(type)) {
+                if (KEY_TYPE.equals(type)) {
                     return List.of(DEFAULT_ALLOWED_ADJUSTMENTS).contains(type)
                             && mNotificationRuleManager.isClassificationAdjustmentAllowed(userId);
                 }
