@@ -52,6 +52,7 @@ public class SpectrumManager {
     private boolean mIsRecording = false;
     private AudioPolicy mAudioPolicy;
     private AudioMix mAudioMix;
+    private boolean mUseMicrophone = false;
 
     /** Create a new manager tied to a nav bar context. */
     public SpectrumManager(Context context) {
@@ -67,12 +68,24 @@ public class SpectrumManager {
         mSpectrumView = view;
     }
 
+    public void setUseMicrophone(boolean useMicrophone) {
+        if (mUseMicrophone == useMicrophone) {
+            return;
+        }
+        mUseMicrophone = useMicrophone;
+        if (mIsRecording) {
+            stop();
+            start();
+        }
+    }
+
     /**
-     * Start recording loopback audio from the remote submix via an AudioPolicy loopback mix.
-     * Output keeps playing to its normal device (speaker, headphones, Bluetooth, etc.).
+     * Start capturing audio for the spectrum. By default captures media playback via an AudioPolicy
+     * loopback mix; when microphone mode is enabled, captures microphone input instead.
      */
     public void start() {
-        Log.d(TAG, "start(): mIsRecording=" + mIsRecording + " mSpectrumView=" + mSpectrumView);
+        Log.d(TAG, "start(): mIsRecording=" + mIsRecording + " mSpectrumView=" + mSpectrumView
+                + " mUseMicrophone=" + mUseMicrophone);
         if (mIsRecording) return;
         if (mSpectrumView == null) return;
         if (mAudioManager == null) {
@@ -80,9 +93,16 @@ public class SpectrumManager {
             return;
         }
 
+        if (mUseMicrophone) {
+            startMicrophoneCapture();
+        } else {
+            startMediaCapture();
+        }
+    }
+
+    private void startMediaCapture() {
         Log.d(TAG, "Starting spectrum capture via AudioPolicy loopback mix");
 
-        // Create a mixing rule that matches media playback
         AudioAttributes mediaAttrs = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .build();
@@ -91,9 +111,6 @@ public class SpectrumManager {
                 .setTargetMixRole(AudioMixingRule.MIX_ROLE_PLAYERS)
                 .build();
 
-        // Create a loopback+render mix for capturing playback without stealing the output route.
-        // ROUTE_FLAG_LOOP_BACK_RENDER plays audio to its normal output device AND provides a copy
-        // for capture through AudioRecord, so output is not stolen from the speaker/headphones/Bluetooth.
         AudioFormat format = new AudioFormat.Builder()
                 .setSampleRate(SAMPLE_RATE)
                 .setChannelMask(CHANNEL_CONFIG)
@@ -101,12 +118,9 @@ public class SpectrumManager {
                 .build();
         mAudioMix = new AudioMix.Builder(rule)
                 .setFormat(format)
-                // LOOP_BACK_RENDER plays audio to its normal output device AND provides a copy
-                // for capture, so output is not stolen from the speaker/headphones/Bluetooth.
                 .setRouteFlags(AudioMix.ROUTE_FLAG_LOOP_BACK | AudioMix.ROUTE_FLAG_RENDER)
                 .build();
 
-        // Create and register the audio policy
         mAudioPolicy = new AudioPolicy.Builder(mContext)
                 .setLooper(mHandler.getLooper())
                 .addMix(mAudioMix)
@@ -119,34 +133,86 @@ public class SpectrumManager {
             mAudioMix = null;
             return;
         }
-        Log.d(TAG, "Audio policy registered");
 
-        // Create an AudioRecord to capture the loopback mix
         mAudioRecord = mAudioPolicy.createAudioRecordSink(mAudioMix);
         if (mAudioRecord == null) {
             Log.e(TAG, "Failed to create AudioRecord sink for audio mix");
-            mAudioManager.unregisterAudioPolicy(mAudioPolicy);
-            mAudioPolicy = null;
-            mAudioMix = null;
+            unregisterAudioPolicy();
             return;
         }
 
         if (mAudioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord not initialized, state=" + mAudioRecord.getState());
-            mAudioRecord.release();
-            mAudioRecord = null;
-            mAudioManager.unregisterAudioPolicy(mAudioPolicy);
-            mAudioPolicy = null;
-            mAudioMix = null;
+            releaseAudioRecord();
+            unregisterAudioPolicy();
             return;
         }
 
+        startCaptureThread();
+    }
+
+    private void startMicrophoneCapture() {
+        Log.d(TAG, "Starting spectrum capture via microphone");
+
+        int minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                AUDIO_FORMAT);
+        int bufferSize = Math.max(minBuffer, BUFFER_SIZE * 4);
+        try {
+            mAudioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO, AUDIO_FORMAT, bufferSize);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create microphone AudioRecord: " + e.getMessage(), e);
+            mAudioRecord = null;
+            return;
+        }
+
+        if (mAudioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "Microphone AudioRecord not initialized, state="
+                    + mAudioRecord.getState());
+            releaseAudioRecord();
+            return;
+        }
+
+        startCaptureThread();
+    }
+
+    private void startCaptureThread() {
+        try {
+            mAudioRecord.startRecording();
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "Failed to start recording: " + e.getMessage(), e);
+            releaseAudioRecord();
+            unregisterAudioPolicy();
+            return;
+        }
         mIsRecording = true;
-        mAudioRecord.startRecording();
 
         mAudioThread = new Thread(new AudioCaptureRunnable(), "spectrum-audio");
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         mAudioThread.start();
+    }
+
+    private void releaseAudioRecord() {
+        if (mAudioRecord != null) {
+            try {
+                mAudioRecord.release();
+            } catch (IllegalStateException e) {
+                // Ignore
+            }
+            mAudioRecord = null;
+        }
+    }
+
+    private void unregisterAudioPolicy() {
+        if (mAudioPolicy != null) {
+            try {
+                mAudioManager.unregisterAudioPolicy(mAudioPolicy);
+            } catch (Exception e) {
+                Log.w(TAG, "Could not unregister audio policy: " + e.getMessage());
+            }
+            mAudioPolicy = null;
+        }
+        mAudioMix = null;
     }
 
     /**

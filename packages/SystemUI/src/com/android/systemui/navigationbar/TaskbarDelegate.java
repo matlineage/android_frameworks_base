@@ -131,6 +131,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private static final String KEY_SPECTRUM_STATUSBAR = "spectrum_statusbar";
     private static final String KEY_SPECTRUM_WIDTH = "spectrum_width";
     private static final String KEY_SPECTRUM_LOCKSCREEN_HEIGHT = "spectrum_lockscreen_height";
+    private static final String KEY_SPECTRUM_USE_MIC = "spectrum_use_mic";
 
     private EdgeBackGestureHandler mEdgeBackGestureHandler;
     private final LightBarTransitionsController.Factory mLightBarTransitionsControllerFactory;
@@ -496,6 +497,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         return Math.round(dp * mContext.getResources().getDisplayMetrics().density);
     }
 
+    private boolean isSpectrumUseMicEnabled() {
+        return LineageSettings.System.getInt(mContext.getContentResolver(),
+                KEY_SPECTRUM_USE_MIC, 0) != 0;
+    }
+
     private void applySpectrumWidthToViews() {
         int khz = getSpectrumWidthKhz();
         if (mSpectrumView != null) {
@@ -514,6 +520,9 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
                 if (mLockscreenSpectrumAdded) {
                     attachLockscreenSpectrumHostIfNeeded();
                 }
+                if (mSpectrumManager != null) {
+                    mSpectrumManager.setUseMicrophone(isSpectrumUseMicEnabled());
+                }
                 updateSpectrumState();
             }
         };
@@ -525,6 +534,8 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_WIDTH),
                 false, mSpectrumSettingsObserver);
         cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_LOCKSCREEN_HEIGHT),
+                false, mSpectrumSettingsObserver);
+        cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_USE_MIC),
                 false, mSpectrumSettingsObserver);
     }
 
@@ -741,6 +752,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         mSpectrumView.setSpectrumWidthKhz(getSpectrumWidthKhz());
         attachSpectrumHostIfNeeded();
         mSpectrumManager.setSpectrumView(mSpectrumView);
+        mSpectrumManager.setUseMicrophone(isSpectrumUseMicEnabled());
         mSpectrumManager.start();
         Log.d(TAG, "startNavbarSpectrum: spectrum started");
     }
@@ -776,6 +788,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         }
         attachLockscreenSpectrumHostIfNeeded();
         mSpectrumManager.setSpectrumView(mLockscreenSpectrumView);
+        mSpectrumManager.setUseMicrophone(isSpectrumUseMicEnabled());
         mSpectrumManager.start();
         Log.d(TAG, "startLockscreenSpectrum: spectrum started");
     }
