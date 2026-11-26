@@ -162,6 +162,15 @@ public class SpectrumView extends View {
 		setSteps(steps);
 	}
 
+	public void setSpectrumWidthKhz(int khz) {
+		// Cut off the drawn spectrum by drawing fewer bins; the FFT calculation is unchanged.
+		int bins = (int) Math.round(khz * 1000.0 / (44100.0 / (steps * 2)));
+		if (bins < 1) bins = 1;
+		if (bins > steps) bins = steps;
+		stepsDraw = bins;
+		invalidate();
+	}
+
 	public void setFlip(boolean f) {
 		flip = f;
 	}

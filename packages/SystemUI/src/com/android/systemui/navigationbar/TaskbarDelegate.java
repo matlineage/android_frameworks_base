@@ -42,7 +42,10 @@ import static com.android.window.flags.Flags.enableSysDecorsCallbacksViaWm;
 import android.app.StatusBarManager;
 import android.app.StatusBarManager.NavbarFlags;
 import android.app.StatusBarManager.WindowVisibleState;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.database.ContentObserver;
+import android.net.Uri;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
@@ -103,6 +106,7 @@ import com.android.systemui.statusbar.phone.AutoHideControllerStore;
 import com.android.systemui.statusbar.phone.LightBarController;
 import com.android.systemui.statusbar.phone.LightBarTransitionsController;
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager;
+import lineageos.providers.LineageSettings;
 import com.android.systemui.statusbar.NotificationShadeWindowController;
 import com.android.wm.shell.back.BackAnimation;
 import com.android.wm.shell.pip.Pip;
@@ -123,6 +127,10 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         LauncherProxyService.LauncherProxyListener, NavigationModeController.ModeChangedListener,
         Dumpable {
     private static final String TAG = TaskbarDelegate.class.getSimpleName();
+    private static final String KEY_SPECTRUM_LOCKSCREEN = "spectrum_lockscreen";
+    private static final String KEY_SPECTRUM_STATUSBAR = "spectrum_statusbar";
+    private static final String KEY_SPECTRUM_WIDTH = "spectrum_width";
+    private static final String KEY_SPECTRUM_LOCKSCREEN_HEIGHT = "spectrum_lockscreen_height";
 
     private EdgeBackGestureHandler mEdgeBackGestureHandler;
     private final LightBarTransitionsController.Factory mLightBarTransitionsControllerFactory;
@@ -175,6 +183,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private SpectrumView mLockscreenSpectrumView;
     private boolean mLockscreenSpectrumAdded;
     private boolean mKeyguardShowing;
+    private ContentObserver mSpectrumSettingsObserver;
 
     /** Refreshes the spectrum overlay placement when the display rotates. */
     private final DisplayManager.DisplayListener mDisplayListener =
@@ -417,6 +426,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             mDisplayManager.registerDisplayListener(mDisplayListener,
                     new Handler(Looper.getMainLooper()));
             mInitialized = true;
+            registerSpectrumSettingsObserver();
             updateSpectrumState();
         } finally {
             Trace.endSection();
@@ -440,6 +450,10 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         mTaskStackChangeListeners.unregisterTaskStackListener(mTaskStackListener);
         mDisplayManager.unregisterDisplayListener(mDisplayListener);
         mStatusBarStateController.removeCallback(mStatusBarStateListener);
+        if (mSpectrumSettingsObserver != null) {
+            mContext.getContentResolver().unregisterContentObserver(mSpectrumSettingsObserver);
+            mSpectrumSettingsObserver = null;
+        }
         stopLockscreenSpectrumLocked();
         stopSpectrum();
         mInitialized = false;
@@ -454,6 +468,66 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
      * the classic nav bar implementation lives in
      * {@code com.android.systemui.navigationbar.views.NavigationBarInflaterView}.
      */
+    private boolean isSpectrumLockscreenEnabled() {
+        return LineageSettings.System.getInt(mContext.getContentResolver(),
+                KEY_SPECTRUM_LOCKSCREEN, 1) != 0;
+    }
+
+    private boolean isSpectrumStatusbarEnabled() {
+        return LineageSettings.System.getInt(mContext.getContentResolver(),
+                KEY_SPECTRUM_STATUSBAR, 1) != 0;
+    }
+
+    private int getSpectrumWidthKhz() {
+        int value = LineageSettings.System.getInt(mContext.getContentResolver(),
+                KEY_SPECTRUM_WIDTH, 15);
+        if (value != 5 && value != 10 && value != 15 && value != 20) {
+            value = 15;
+        }
+        return value;
+    }
+
+    private int getSpectrumLockscreenHeightPx() {
+        int dp = LineageSettings.System.getInt(mContext.getContentResolver(),
+                KEY_SPECTRUM_LOCKSCREEN_HEIGHT, 96);
+        if (dp != 48 && dp != 96 && dp != 144) {
+            dp = 96;
+        }
+        return Math.round(dp * mContext.getResources().getDisplayMetrics().density);
+    }
+
+    private void applySpectrumWidthToViews() {
+        int khz = getSpectrumWidthKhz();
+        if (mSpectrumView != null) {
+            mSpectrumView.setSpectrumWidthKhz(khz);
+        }
+        if (mLockscreenSpectrumView != null) {
+            mLockscreenSpectrumView.setSpectrumWidthKhz(khz);
+        }
+    }
+
+    private void registerSpectrumSettingsObserver() {
+        mSpectrumSettingsObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+            @Override
+            public void onChange(boolean selfChange, Uri uri) {
+                applySpectrumWidthToViews();
+                if (mLockscreenSpectrumAdded) {
+                    attachLockscreenSpectrumHostIfNeeded();
+                }
+                updateSpectrumState();
+            }
+        };
+        ContentResolver cr = mContext.getContentResolver();
+        cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_LOCKSCREEN),
+                false, mSpectrumSettingsObserver);
+        cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_STATUSBAR),
+                false, mSpectrumSettingsObserver);
+        cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_WIDTH),
+                false, mSpectrumSettingsObserver);
+        cr.registerContentObserver(LineageSettings.System.getUriFor(KEY_SPECTRUM_LOCKSCREEN_HEIGHT),
+                false, mSpectrumSettingsObserver);
+    }
+
     private void updateSpectrumState() {
         try {
             Log.d(TAG, "updateSpectrumState: keyguardShowing=" + mKeyguardShowing
@@ -465,10 +539,15 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
                 // While the keyguard is showing the spectrum lives on the lock screen, behind the
                 // keyguard content. The navbar variant must stay off so there is never two at once.
                 stopNavbarSpectrumLocked();
-                startLockscreenSpectrum();
+                if (isSpectrumLockscreenEnabled()) {
+                    startLockscreenSpectrum();
+                } else {
+                    stopLockscreenSpectrumLocked();
+                }
             } else {
                 stopLockscreenSpectrumLocked();
-                if (isWindowVisible() || mTaskbarTransientShowing) {
+                if (isSpectrumStatusbarEnabled()
+                        && (isWindowVisible() || mTaskbarTransientShowing)) {
                     startNavbarSpectrum();
                 } else {
                     stopNavbarSpectrumLocked();
@@ -659,6 +738,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         if (mSpectrumView == null) {
             mSpectrumView = new SpectrumView(mContext);
         }
+        mSpectrumView.setSpectrumWidthKhz(getSpectrumWidthKhz());
         attachSpectrumHostIfNeeded();
         mSpectrumManager.setSpectrumView(mSpectrumView);
         mSpectrumManager.start();
@@ -691,6 +771,9 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             mLockscreenSpectrumView.setFocusable(false);
             mLockscreenSpectrumView.setOnTouchListener((v, event) -> false);
         }
+        if (mLockscreenSpectrumView != null) {
+            mLockscreenSpectrumView.setSpectrumWidthKhz(getSpectrumWidthKhz());
+        }
         attachLockscreenSpectrumHostIfNeeded();
         mSpectrumManager.setSpectrumView(mLockscreenSpectrumView);
         mSpectrumManager.start();
@@ -713,8 +796,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             ((ViewGroup) mLockscreenSpectrumView.getParent()).removeView(mLockscreenSpectrumView);
         }
 
-        final int height = mContext.getResources().getDimensionPixelSize(
-                com.android.systemui.res.R.dimen.spectrum_lockscreen_height);
+        final int height = getSpectrumLockscreenHeightPx();
         final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, height);
         params.gravity = Gravity.BOTTOM;
