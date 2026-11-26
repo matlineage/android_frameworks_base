@@ -210,7 +210,7 @@ constructor(
 
     companion object {
         const val GLANCEABLE_HUB_BACKGROUND_SETTING = "glanceable_hub_background"
-        private const val ENABLED_SETTING_DEFAULT_PRE_HUB_V2 = 1
+        private const val ENABLED_SETTING_DEFAULT_PRE_HUB_V2 = 0
     }
 }
 
