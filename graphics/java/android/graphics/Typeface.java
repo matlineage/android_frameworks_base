@@ -57,6 +57,7 @@ import android.util.SparseArray;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.Preconditions;
+import com.android.internal.util.android.FontController;
 import com.android.text.flags.Flags;
 
 import dalvik.annotation.optimization.CriticalNative;
@@ -290,6 +291,7 @@ public class Typeface {
      * @hide
      */
     public static final String DEFAULT_FAMILY = "sans-serif";
+    private static volatile String sFontName = DEFAULT_FAMILY;
 
     static {
         DEFAULT_BOLD = new Typeface(Typeface.BOLD, 700, null);
@@ -989,7 +991,7 @@ public class Typeface {
      * @return The best matching typeface.
      */
     public static Typeface create(String familyName, @Style int style) {
-        return create(getSystemDefaultTypeface(familyName), style);
+        return create(getOverrideTypeface(familyName), style);
     }
 
     /**
@@ -1372,9 +1374,52 @@ public class Typeface {
         mCleaner.run();
     }
 
-    private static Typeface getSystemDefaultTypeface(@NonNull String familyName) {
+    /** @hide */
+    public static Typeface getOverrideTypeface(@NonNull String familyName) {
+        Typeface tf = FontController.getOverrideTypeface(familyName);
+        return tf == null ? getSystemDefaultTypeface(familyName) : tf;
+    }
+
+    /** @hide */
+    public static Typeface getSystemDefaultTypeface(@NonNull String familyName) {
         Typeface tf = sSystemFontMap.get(familyName);
         return tf == null ? Typeface.DEFAULT : tf;
+    }
+
+    /** @hide */
+    public static void changeFont() {
+        synchronized (sDynamicCacheLock) {
+            sDynamicTypefaceCache.evictAll();
+        }
+
+        String fontFamily = FontController.getCurrentFontFamily();
+
+        sFontName = fontFamily;
+
+        Typeface tf;
+        if (FontController.shouldBypassVariableFont()) {
+            tf = getOverrideTypeface(sFontName);
+        } else {
+            // Use FontController's fallback resolver to handle family-list
+            // entries (e.g. google-sans-flex) that may not register in
+            // sSystemFontMap by their list name, falling back through known
+            // aliases to Typeface.DEFAULT.
+            tf = FontController.resolveBaseTypeface();
+        }
+
+        Typeface tfBold = create(tf, BOLD);
+        Typeface tfItalic = create(tf, ITALIC);
+        Typeface tfItalicBold = create(tf, BOLD_ITALIC);
+
+        changeDefaultFontForTest(
+                Arrays.asList(
+                        tf, tfBold, tfItalic, tfItalicBold),
+                Arrays.asList(tf, Typeface.SERIF, Typeface.MONOSPACE));
+    }
+
+    /** @hide */
+    public static String getFontName() {
+        return sFontName;
     }
 
     /** @hide */

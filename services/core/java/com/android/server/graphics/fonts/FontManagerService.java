@@ -206,6 +206,10 @@ public final class FontManagerService extends IFontManager.Stub {
 
         @Override
         public boolean isFromTrustedProvider(String fontPath, byte[] pkcs7Signature) {
+            if (!VerityUtils.isFsVeritySupported()) {
+                // fs-verity not supported on this device; allow font updates in custom ROM builds.
+                return true;
+            }
             final byte[] digest = VerityUtils.getFsverityDigest(fontPath);
             if (digest == null) {
                 Log.w(TAG, "Failed to get fs-verity digest for " + fontPath);
@@ -225,6 +229,9 @@ public final class FontManagerService extends IFontManager.Stub {
 
         @Override
         public void setUpFsverity(String filePath) throws IOException {
+            if (!VerityUtils.isFsVeritySupported()) {
+                return;
+            }
             VerityUtils.setUpFsverity(filePath);
         }
 
@@ -300,8 +307,6 @@ public final class FontManagerService extends IFontManager.Stub {
     private UpdatableFontDir createUpdatableFontDir() {
         // Never read updatable font files in safe mode.
         if (mIsSafeMode) return null;
-        // If apk verity is supported, fs-verity should be available.
-        if (!VerityUtils.isFsVeritySupported()) return null;
 
         String[] certs = mContext.getResources().getStringArray(
                 R.array.config_fontManagerServiceCerts);
@@ -393,7 +398,8 @@ public final class FontManagerService extends IFontManager.Stub {
      * <p>CAUTION: this method is not safe. Existing processes may crash due to missing font files.
      * This method is only for {@link FontManagerShellCommand}.
      */
-    /* package */ void clearUpdates() {
+    @Override
+    public void clearUpdates() {
         UpdatableFontDir.deleteAllFiles(new File(FONT_FILES_DIR), new File(CONFIG_XML_FILE));
         initialize();
     }
