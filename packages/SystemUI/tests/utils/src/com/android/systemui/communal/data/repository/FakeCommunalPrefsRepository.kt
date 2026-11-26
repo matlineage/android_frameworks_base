@@ -25,7 +25,7 @@ import kotlinx.coroutines.flow.map
 /** Fake implementation of [CommunalPrefsRepository] */
 class FakeCommunalPrefsRepository : CommunalPrefsRepository {
     private val _isCtaDismissed = MutableStateFlow<Set<UserInfo>>(emptySet())
-    private val _isHubOnboardingDismissed = MutableStateFlow<Set<UserInfo>>(emptySet())
+    private val _isHubOnboardingDismissed = MutableStateFlow(true)
     private val _isDreamButtonTooltipDismissed = MutableStateFlow<Set<UserInfo>>(emptySet())
 
     override fun isCtaDismissed(user: UserInfo): Flow<Boolean> =
@@ -36,12 +36,9 @@ class FakeCommunalPrefsRepository : CommunalPrefsRepository {
     }
 
     override fun isHubOnboardingDismissed(user: UserInfo): Flow<Boolean> =
-        _isHubOnboardingDismissed.map { it.contains(user) }
+        _isHubOnboardingDismissed
 
-    override suspend fun setHubOnboardingDismissed(user: UserInfo) {
-        _isHubOnboardingDismissed.value =
-            _isHubOnboardingDismissed.value.toMutableSet().apply { add(user) }
-    }
+    override suspend fun setHubOnboardingDismissed(user: UserInfo) {}
 
     override fun isDreamButtonTooltipDismissed(user: UserInfo): Flow<Boolean> =
         _isDreamButtonTooltipDismissed.map { it.contains(user) }

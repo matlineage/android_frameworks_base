@@ -96,7 +96,7 @@ constructor(
         setBooleanKeyValueForUser(user, CTA_DISMISSED_STATE, "Dismissed CTA tile")
 
     override fun isHubOnboardingDismissed(user: UserInfo): Flow<Boolean> =
-        readKeyForUser(user, HUB_ONBOARDING_DISMISSED_STATE)
+        readKeyForUser(user, HUB_ONBOARDING_DISMISSED_STATE, defaultValue = true)
 
     override suspend fun setHubOnboardingDismissed(user: UserInfo) =
         setBooleanKeyValueForUser(user, HUB_ONBOARDING_DISMISSED_STATE, "Dismissed hub onboarding")
@@ -121,11 +121,11 @@ constructor(
             logger.i(logMsg)
         }
 
-    private fun readKeyForUser(user: UserInfo, key: String): Flow<Boolean> {
+    private fun readKeyForUser(user: UserInfo, key: String, defaultValue: Boolean = false): Flow<Boolean> {
         return backupRestorationEvents
             .flatMapLatest {
                 val sharedPrefs = getSharedPrefsForUser(user)
-                sharedPrefs.observe().emitOnStart().map { sharedPrefs.getBoolean(key, false) }
+                sharedPrefs.observe().emitOnStart().map { sharedPrefs.getBoolean(key, defaultValue) }
             }
             .flowOn(bgDispatcher)
     }

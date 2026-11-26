@@ -86,11 +86,11 @@ class CommunalPrefsRepositoryImplTest : SysuiTestCase() {
         }
 
     @Test
-    fun isHubOnboardingDismissedValue_byDefault_isFalse() =
+    fun isHubOnboardingDismissedValue_byDefault_isTrue() =
         testScope.runTest {
             val isHubOnboardingDismissed by
                 collectLastValue(underTest.isHubOnboardingDismissed(MAIN_USER))
-            assertThat(isHubOnboardingDismissed).isFalse()
+            assertThat(isHubOnboardingDismissed).isTrue()
         }
 
     @Test
@@ -104,13 +104,13 @@ class CommunalPrefsRepositoryImplTest : SysuiTestCase() {
         }
 
     @Test
-    fun isHubOnboardingDismissedValue_onSetForDifferentUser_isStillFalse() =
+    fun isHubOnboardingDismissedValue_onSetForDifferentUser_isStillTrue() =
         testScope.runTest {
             val isHubOnboardingDismissed by
                 collectLastValue(underTest.isHubOnboardingDismissed(MAIN_USER))
 
             underTest.setHubOnboardingDismissed(SECONDARY_USER)
-            assertThat(isHubOnboardingDismissed).isFalse()
+            assertThat(isHubOnboardingDismissed).isTrue()
         }
 
     @Test

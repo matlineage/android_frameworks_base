@@ -67,12 +67,12 @@ constructor(
             .logDiffsForTable(
                 tableLogBuffer = tableLogBuffer,
                 columnName = "isHubOnboardingDismissed",
-                initialValue = false,
+                initialValue = true,
             )
             .stateIn(
                 scope = bgScope,
                 started = SharingStarted.WhileSubscribed(),
-                initialValue = false,
+                initialValue = true,
             )
 
     fun setHubOnboardingDismissed(user: UserInfo = userTracker.userInfo) =
