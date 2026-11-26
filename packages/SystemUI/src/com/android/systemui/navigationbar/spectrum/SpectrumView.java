@@ -57,10 +57,10 @@ public class SpectrumView extends View {
 		//BGPaint.setAlpha(128);
 		peakPaint.setColor(Color.GRAY);
 		peakPaint.setStyle(Paint.Style.FILL);
-		peakPaint.setAlpha(64);
+		peakPaint.setAlpha(128);
 		Color.colorToHSV(Color.RED, FGColor);
 		FGPaint.setStyle(Paint.Style.FILL);
-		FGPaint.setAlpha(64);
+		FGPaint.setAlpha(128);
 		setSteps(steps);
 	}
 
