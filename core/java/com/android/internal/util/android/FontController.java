@@ -192,7 +192,9 @@ public class FontController {
         final boolean bypassVariableFont = shouldBypassVariableFontInternal();
         final boolean customFontActive = isCustomFontPickerActiveInternal();
 
+        final boolean isClockFont = fontToOverride.contains("clock");
         if (!customFontActive
+                && (!isClockFont || !bypassVariableFont)
                 && fontToOverride.matches("^" + Pattern.quote(currentFont) + "(-.*)?$")) {
             logger(fontToOverride + " matches current font root '" + currentFont + "', skipping override!");
             return null;

@@ -189,6 +189,7 @@ class FlexClockTextViewController(
                     } else {
                         View.IMPORTANT_FOR_ACCESSIBILITY_YES
                     }
+                view.refreshTypeface()
             }
 
             override fun onFontSettingChanged(fontSizePx: Float) {
@@ -200,6 +201,7 @@ class FlexClockTextViewController(
                     lockscreenColor = theme.getDefaultColor(clockCtx.context),
                     aodColor = theme.getAodColor(clockCtx.context),
                 )
+                view.refreshTypeface()
                 refreshTime()
             }
 

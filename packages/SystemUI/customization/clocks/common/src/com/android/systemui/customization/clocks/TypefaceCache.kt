@@ -49,29 +49,35 @@ class TypefaceCache<TKey>(
     // result, once a typeface is no longer being used, it is unlikely to be recreated immediately.
     private val cache = mutableMapOf<CacheKey<TKey>, WeakTypefaceRef>()
     private val queue = ReferenceQueue<Typeface>()
-    private val fontCache = FontCacheImpl(animationFrameCount)
+    private var fontCache = FontCacheImpl(animationFrameCount)
 
     fun getTypeface(res: TKey): Typeface {
         checkQueue()
         val key = CacheKey(res, null)
+        val result = typefaceFactory(res)
         cache[key]?.get()?.let {
-            logHit(key)
-            return it
+            if (it === result) {
+                logHit(key)
+                return it
+            }
+            // Base font changed (for example, user switched font style). Drop stale
+            // typeface and animation-frame caches so the clock updates immediately.
+            cache.clear()
+            fontCache = FontCacheImpl(animationFrameCount)
         }
 
         logMiss(key)
-        val result = typefaceFactory(res)
         cache[key] = WeakTypefaceRef(key, result)
         return result
     }
 
     fun getVariantCache(res: TKey): TypefaceVariantCache {
-        val baseTypeface = getTypeface(res)
         return object : TypefaceVariantCache {
             override val fontCache = this@TypefaceCache.fontCache
             override val animationFrameCount = this@TypefaceCache.animationFrameCount
 
             override fun getTypefaceForVariant(fvar: String?): Typeface {
+                val baseTypeface = getTypeface(res)
                 checkQueue()
                 val key = CacheKey(res, fvar)
                 cache[key]?.get()?.let {

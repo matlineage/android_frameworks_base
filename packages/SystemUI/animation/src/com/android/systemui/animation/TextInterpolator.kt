@@ -157,7 +157,11 @@ class TextInterpolator(
      * used for interpolation.
      */
     fun onTargetPaintModified() {
-        updatePositionsAndFonts(shapeText(layout, targetPaint), updateBase = false)
+        try {
+            updatePositionsAndFonts(shapeText(layout, targetPaint), updateBase = false)
+        } catch (e: IllegalArgumentException) {
+            shapeText(layout)
+        }
         listener?.onPaintModified(targetPaint)
     }
 
@@ -168,7 +172,11 @@ class TextInterpolator(
      * used for interpolation.
      */
     fun onBasePaintModified() {
-        updatePositionsAndFonts(shapeText(layout, basePaint), updateBase = true)
+        try {
+            updatePositionsAndFonts(shapeText(layout, basePaint), updateBase = true)
+        } catch (e: IllegalArgumentException) {
+            shapeText(layout)
+        }
         listener?.onPaintModified(basePaint)
     }
 
@@ -289,108 +297,45 @@ class TextInterpolator(
     // Shape text with current paint parameters.
     private fun shapeText(layout: Layout) {
         val baseLayout = shapeText(layout, basePaint)
-        val targetLayout = shapeText(layout, targetPaint)
-
-        require(baseLayout.lines.size == targetLayout.lines.size) {
-            "The new layout result has different line count."
-        }
-
         var maxRunLength = 0
         lines =
-            baseLayout.lines.zip(targetLayout.lines) { baseLine, targetLine ->
-                require(baseLine.runs.size == targetLine.runs.size) {
-                    "The new layout result has different run count."
-                }
-
-                val baseOffset = baseLine.runs.lastOrNull()?.glyphs?.offsetX ?: 0f
-                val targetOffset = targetLine.runs.lastOrNull()?.glyphs?.offsetX ?: 0f
+            baseLayout.lines.map { baseLine ->
+                val offset = baseLine.runs.lastOrNull()?.glyphs?.offsetX ?: 0f
                 val runs =
-                    baseLine.runs.zip(targetLine.runs) { base, target ->
-                        require(base.glyphs.glyphCount() == target.glyphs.glyphCount()) {
-                            "Inconsistent glyph count at line ${lines.size}"
-                        }
-
+                    baseLine.runs.map { base ->
                         val glyphCount = base.glyphs.glyphCount()
-
-                        // Good to recycle the array if the existing array can hold the new layout
-                        // result.
-                        val glyphIds =
-                            IntArray(glyphCount) {
-                                base.glyphs.getGlyphId(it).also { baseGlyphId ->
-                                    require(baseGlyphId == target.glyphs.getGlyphId(it)) {
-                                        "Inconsistent glyph ID at $it in line ${lines.size}"
-                                    }
-                                }
-                            }
-
-                        val baseX = FloatArray(glyphCount)
-                        val baseY = FloatArray(glyphCount)
+                        val glyphIds = IntArray(glyphCount) { base.glyphs.getGlyphId(it) }
+                        val x = FloatArray(glyphCount)
+                        val y = FloatArray(glyphCount)
                         populateGlyphPositions(
                             basePaint,
                             baseLayout.layout,
                             base.glyphs,
                             base.text,
-                            baseX,
-                            baseY,
+                            x,
+                            y,
                         )
-
-                        val targetX = FloatArray(glyphCount)
-                        val targetY = FloatArray(glyphCount)
-                        populateGlyphPositions(
-                            targetPaint,
-                            targetLayout.layout,
-                            target.glyphs,
-                            target.text,
-                            targetX,
-                            targetY,
-                        )
-
-                        // Calculate font runs
                         val fontRuns = buildList {
                             if (glyphCount != 0) {
                                 var start = 0
-                                var baseFont = base.glyphs.getFont(start)
-                                var targetFont = target.glyphs.getFont(start)
-                                require(FontInterpolator.canInterpolate(baseFont, targetFont)) {
-                                    "Cannot interpolate font at $start ($baseFont vs $targetFont)"
-                                }
-
+                                var font = base.glyphs.getFont(start)
                                 for (i in 1 until glyphCount) {
-                                    val nextBaseFont = base.glyphs.getFont(i)
-                                    val nextTargetFont = target.glyphs.getFont(i)
-
-                                    if (baseFont !== nextBaseFont) {
-                                        require(targetFont !== nextTargetFont) {
-                                            "Base font has changed at $i but target font is unchanged."
-                                        }
-                                        // Font transition point. push run and reset context.
-                                        add(FontRun(start, i, baseFont, targetFont))
+                                    val nextFont = base.glyphs.getFont(i)
+                                    if (font !== nextFont) {
+                                        add(FontRun(start, i, font, font))
                                         maxRunLength = max(maxRunLength, i - start)
-                                        baseFont = nextBaseFont
-                                        targetFont = nextTargetFont
+                                        font = nextFont
                                         start = i
-                                        require(
-                                            FontInterpolator.canInterpolate(baseFont, targetFont)
-                                        ) {
-                                            "Cannot interpolate font at $start ($baseFont vs $targetFont)"
-                                        }
-                                    } else { // baseFont === nextBaseFont
-                                        require(targetFont === nextTargetFont) {
-                                            "Base font is unchanged at $i but target font has changed."
-                                        }
                                     }
                                 }
-                                add(FontRun(start, glyphCount, baseFont, targetFont))
+                                add(FontRun(start, glyphCount, font, font))
                                 maxRunLength = max(maxRunLength, glyphCount - start)
                             }
                         }
-
-                        Run(glyphIds, baseX, baseY, targetX, targetY, fontRuns)
+                        Run(glyphIds, x, y, x.copyOf(), y.copyOf(), fontRuns)
                     }
-                Line(baseOffset, targetOffset, runs)
+                Line(offset, offset, runs)
             }
-
-        // Update float array used for drawing.
         if (tmpPositionArray.size < maxRunLength * 2) {
             tmpPositionArray = FloatArray(maxRunLength * 2)
         }

@@ -17,6 +17,7 @@
 package com.android.systemui.customization.clocks.view
 
 import android.graphics.Canvas
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Paint
 import android.os.VibrationEffect
@@ -232,6 +233,18 @@ abstract class DigitalClockTextView(private val clockCtx: ClockContext) :
             TextAnimator.Style(color = if (dozeFraction < 0.5f) lockscreenColor else aodColor)
         )
         invalidate()
+    }
+
+    fun refreshTypeface() {
+        lockscreenPaint.typeface =
+            typefaceCache.getTypefaceForVariant(fontVariations.lockscreen)
+        typeface = lockscreenPaint.typeface
+        invalidate()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration?) {
+        super.onConfigurationChanged(newConfig)
+        refreshTypeface()
     }
 
     fun updateAxes(lsAxes: ClockAxisStyle, isAnimated: Boolean) {
