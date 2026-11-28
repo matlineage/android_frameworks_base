@@ -432,7 +432,8 @@ abstract class DigitalClockTextView(private val clockCtx: ClockContext) :
         returnStyle: TextAnimator.Style,
         animation: TextAnimator.Animation,
     ) {
-        textAnimator.setTransientTextStyle(targetStyle, returnStyle, animation)
+        // Font axis animation disabled: static fonts and custom fonts can be
+        // incompatible with TextInterpolator glyph interpolation.
     }
 
     override fun animateCharge() {

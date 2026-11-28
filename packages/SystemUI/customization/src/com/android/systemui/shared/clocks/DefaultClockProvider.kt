@@ -123,7 +123,6 @@ constructor(
 
         val FLEX_TYPEFACE: Typeface
             get() =
-                // TODO(b/364680873): Move constant to config_clockFontFamily when shipping
-                Typeface.create("google-sans-flex-clock", Typeface.NORMAL)
+                Typeface.create("google-sans-flex", Typeface.NORMAL)
     }
 }
